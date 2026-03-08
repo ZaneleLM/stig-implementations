@@ -1,6 +1,4 @@
-<#
-.SYNOPSIS
-    .DESCRIPTION
+DESCRIPTION
 This script automates the configuration of the "Disable the built-in Guest account" policy.
 
 
