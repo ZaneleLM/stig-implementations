@@ -1,0 +1,130 @@
+DESCRIPTION
+This script automates the configuration of the "Disable reversible password encryption" policy.
+
+[CmdletBinding(SupportsShouldProcess)]
+param ()
+
+$STIG_ID  = "WN10-AC-000045"
+$LOG_FILE = "$env:SystemRoot\Logs\STIG-Remediation-$STIG_ID.log"
+
+# Ensure log directory exists
+if (-not (Test-Path "$env:SystemRoot\Logs")) {
+    New-Item -ItemType Directory -Path "$env:SystemRoot\Logs" -Force | Out-Null
+}
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $entry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    Write-Host $entry
+    $entry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
+}
+
+
+# 1. Export current local security policy and read the setting
+#    ClearTextPassword = 0 means disabled (compliant)
+#    ClearTextPassword = 1 means enabled (non-compliant)
+
+Write-Log "Starting remediation for $STIG_ID - Disable Reversible Password Encryption"
+
+$exportFile = "$env:TEMP\secpol_export_$STIG_ID.cfg"
+
+try {
+    secedit /export /cfg $exportFile /quiet | Out-Null
+    if (-not (Test-Path $exportFile)) {
+        throw "secedit export file not found after export."
+    }
+} catch {
+    Write-Log "Failed to export security policy: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+
+$currentValue = $null
+$line = Get-Content $exportFile | Where-Object { $_ -match "ClearTextPassword" }
+if ($line -match "=\s*(\d+)") {
+    $currentValue = [int]$Matches[1]
+}
+Remove-Item $exportFile -Force -ErrorAction SilentlyContinue
+
+Write-Log "Current ClearTextPassword  : $(if ($null -eq $currentValue) { 'Unable to read' } else { $currentValue })"
+Write-Log "Required ClearTextPassword : 0 (Disabled)"
+
+
+# 2. Check compliance 
+
+if ($currentValue -eq 0) {
+    Write-Log "Reversible encryption is already disabled. No changes needed."
+    exit 0
+}
+
+
+# 3. Apply the fix via secedit INF template
+
+Write-Log "Applying fix: disabling reversible password encryption ..."
+
+$infFile = "$env:TEMP\secpol_cleartext_$STIG_ID.inf"
+$sdbFile = "$env:TEMP\secpol_cleartext_$STIG_ID.sdb"
+$seceditLog = "$env:TEMP\secpol_cleartext_$STIG_ID.log"
+
+$infContent = @"
+[Unicode]
+Unicode=yes
+[System Access]
+ClearTextPassword = 0
+[Version]
+signature="`$CHICAGO`$"
+Revision=1
+"@
+
+if ($PSCmdlet.ShouldProcess("Local Security Policy", "Disable ClearTextPassword")) {
+    try {
+        $infContent | Out-File -FilePath $infFile -Encoding Unicode -Force
+
+        secedit /configure /db $sdbFile /cfg $infFile /log $seceditLog /quiet
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "secedit /configure failed (exit code $LASTEXITCODE). Check $seceditLog for details." "ERROR"
+            exit 1
+        }
+
+        Write-Log "secedit /configure succeeded."
+    } catch {
+        Write-Log "Exception applying security policy: $($_.Exception.Message)" "ERROR"
+        exit 1
+    } finally {
+        Remove-Item $infFile     -Force -ErrorAction SilentlyContinue
+        Remove-Item $sdbFile     -Force -ErrorAction SilentlyContinue
+        Remove-Item $seceditLog  -Force -ErrorAction SilentlyContinue
+    }
+}
+
+
+# 4. Verify the change was applied
+
+Write-Log "Verifying remediation ..."
+
+$verifyFile = "$env:TEMP\secpol_verify_$STIG_ID.cfg"
+
+try {
+    secedit /export /cfg $verifyFile /quiet | Out-Null
+
+    $newValue = $null
+    $verifyLine = Get-Content $verifyFile | Where-Object { $_ -match "ClearTextPassword" }
+    if ($verifyLine -match "=\s*(\d+)") {
+        $newValue = [int]$Matches[1]
+    }
+    Remove-Item $verifyFile -Force -ErrorAction SilentlyContinue
+
+    if ($newValue -eq 0) {
+        Write-Log "VERIFICATION PASSED - ClearTextPassword is now disabled (value: $newValue)."
+        exit 0
+    } else {
+        Write-Log "VERIFICATION FAILED - ClearTextPassword value is '$newValue' (expected 0)." "ERROR"
+        exit 1
+    }
+} catch {
+    Write-Log "Failed to verify ClearTextPassword setting: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
