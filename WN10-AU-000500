@@ -1,0 +1,101 @@
+DESCRIPTION
+This script automates the configuration of the "Enable password complexity" policy.
+
+
+#Requires -RunAsAdministrator
+
+[CmdletBinding(SupportsShouldProcess)]
+param (
+    [int]$MinLogSizeKB = 32768   # 32768 KB = 32 MB (STIG minimum)
+)
+
+$STIG_ID  = "WN10-AU-000500"
+$LOG_FILE = "$env:SystemRoot\Logs\STIG-Remediation-$STIG_ID.log"
+
+$REG_PATH = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application"
+$REG_NAME = "MaxSize"
+
+# Ensure log directory exists
+if (-not (Test-Path "$env:SystemRoot\Logs")) {
+    New-Item -ItemType Directory -Path "$env:SystemRoot\Logs" -Force | Out-Null
+}
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $entry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    Write-Host $entry
+    $entry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
+}
+
+
+1. Read current registry value
+   MaxSize must be >= 32768 KB to be compliant
+
+Write-Log "Starting remediation for $STIG_ID - Application Event Log Size"
+
+$currentValue = $null
+try {
+    if (Test-Path $REG_PATH) {
+        $currentValue = (Get-ItemProperty -Path $REG_PATH -Name $REG_NAME -ErrorAction SilentlyContinue).$REG_NAME
+    }
+} catch {
+    Write-Log "Failed to read registry value: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+
+Write-Log "Registry path  : $REG_PATH"
+Write-Log "Registry value : $REG_NAME"
+Write-Log "Current value  : $(if ($null -eq $currentValue) { 'Not set (non-compliant)' } else { "$currentValue KB" })"
+Write-Log "Required value : $MinLogSizeKB KB or greater"
+
+
+2. Check compliance 
+
+if ($null -ne $currentValue -and $currentValue -ge $MinLogSizeKB) {
+    Write-Log "Application event log size is already compliant (value: $currentValue KB). No changes needed."
+    exit 0
+}
+
+
+3. Apply the fix via registry
+
+Write-Log "Applying fix: setting $REG_NAME to $MinLogSizeKB KB ..."
+
+if ($PSCmdlet.ShouldProcess($REG_PATH, "Set $REG_NAME to $MinLogSizeKB")) {
+    try {
+        # Create the key if it doesn't exist
+        if (-not (Test-Path $REG_PATH)) {
+            New-Item -Path $REG_PATH -Force | Out-Null
+            Write-Log "Registry path did not exist - created: $REG_PATH"
+        }
+
+        Set-ItemProperty -Path $REG_PATH -Name $REG_NAME -Value $MinLogSizeKB -Type DWord -Force
+        Write-Log "Registry value set successfully."
+    } catch {
+        Write-Log "Failed to set registry value: $($_.Exception.Message)" "ERROR"
+        exit 1
+    }
+}
+
+
+4. Verify the change was applied
+
+Write-Log "Verifying remediation ..."
+
+try {
+    $newValue = (Get-ItemProperty -Path $REG_PATH -Name $REG_NAME -ErrorAction Stop).$REG_NAME
+
+    if ($null -ne $newValue -and $newValue -ge $MinLogSizeKB) {
+        Write-Log "VERIFICATION PASSED - $REG_NAME is now $newValue KB."
+        exit 0
+    } else {
+        Write-Log "VERIFICATION FAILED - $REG_NAME value is '$newValue' (expected >= $MinLogSizeKB KB)." "ERROR"
+        exit 1
+    }
+} catch {
+    Write-Log "Failed to verify registry value: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
