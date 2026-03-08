@@ -1,0 +1,99 @@
+<#
+.SYNOPSIS
+    .DESCRIPTION
+This script automates the configuration of the "Disable the built-in Guest account" policy.
+
+
+
+#Requires -RunAsAdministrator
+
+[CmdletBinding(SupportsShouldProcess)]
+param ()
+
+$STIG_ID  = "WN10-SO-000010"
+$LOG_FILE = "$env:SystemRoot\Logs\STIG-Remediation-$STIG_ID.log"
+
+# Ensure log directory exists
+if (-not (Test-Path "$env:SystemRoot\Logs")) {
+    New-Item -ItemType Directory -Path "$env:SystemRoot\Logs" -Force | Out-Null
+}
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $entry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    Write-Host $entry
+    $entry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
+}
+
+
+# 1. Locate the built-in Guest account by well-known SID suffix -501
+
+Write-Log "Starting remediation for $STIG_ID - Disable Built-in Guest Account"
+
+try {
+    $guestAccount = Get-WmiObject -Class Win32_UserAccount -Filter "LocalAccount=True" |
+                    Where-Object { $_.SID -match "-501$" }
+} catch {
+    Write-Log "Failed to query local accounts: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+
+if ($null -eq $guestAccount) {
+    Write-Log "Built-in Guest account not found on this system. Nothing to do." "WARN"
+    exit 0
+}
+
+Write-Log "Found Guest account : '$($guestAccount.Name)' (SID: $($guestAccount.SID))"
+Write-Log "Current Disabled    : $($guestAccount.Disabled)"
+
+
+# 2. Check compliance - exit early if already disabled
+
+if ($guestAccount.Disabled -eq $true) {
+    Write-Log "Guest account is already disabled. No changes needed."
+    exit 0
+}
+
+
+# 3. Disable the account
+
+Write-Log "Disabling Guest account '$($guestAccount.Name)' ..."
+
+if ($PSCmdlet.ShouldProcess("Guest account '$($guestAccount.Name)'", "Disable")) {
+    try {
+        $result = & net user $guestAccount.Name /active:no 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "net user command succeeded: $result"
+        } else {
+            Write-Log "net user command failed (exit code $LASTEXITCODE): $result" "ERROR"
+            exit 1
+        }
+    } catch {
+        Write-Log "Exception while disabling Guest account: $($_.Exception.Message)" "ERROR"
+        exit 1
+    }
+}
+
+
+# 4. Verify the change was applied
+
+Write-Log "Verifying remediation ..."
+
+try {
+    $verified = Get-WmiObject -Class Win32_UserAccount -Filter "LocalAccount=True" |
+                Where-Object { $_.SID -match "-501$" }
+
+    if ($verified.Disabled -eq $true) {
+        Write-Log "VERIFICATION PASSED - Guest account '$($verified.Name)' is now disabled."
+        exit 0
+    } else {
+        Write-Log "VERIFICATION FAILED - Guest account '$($verified.Name)' is still enabled." "ERROR"
+        exit 1
+    }
+} catch {
+    Write-Log "Failed to verify Guest account state: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
