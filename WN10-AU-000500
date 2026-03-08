@@ -1,5 +1,5 @@
 DESCRIPTION
-This script automates the configuration of the "Enable password complexity" policy.
+This script automates the configuration of the "Application event log size must be 32768 KB or greater" policy.
 
 
 #Requires -RunAsAdministrator
