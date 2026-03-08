@@ -1,0 +1,101 @@
+DESCRIPTION
+This script automates the configuration of the "Disable camera on lock screen" policy.
+
+#Requires -RunAsAdministrator
+
+[CmdletBinding(SupportsShouldProcess)]
+param ()
+
+$STIG_ID  = "WN10-CC-000005"
+$LOG_FILE = "$env:SystemRoot\Logs\STIG-Remediation-$STIG_ID.log"
+
+$REG_PATH = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization"
+$REG_NAME = "NoLockScreenCamera"
+
+# Ensure log directory exists
+if (-not (Test-Path "$env:SystemRoot\Logs")) {
+    New-Item -ItemType Directory -Path "$env:SystemRoot\Logs" -Force | Out-Null
+}
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $entry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    Write-Host $entry
+    $entry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
+}
+
+
+# 1. Read current registry value
+#    NoLockScreenCamera = 1 means camera disabled on lock screen (compliant)
+#    NoLockScreenCamera = 0 or not set means camera enabled (non-compliant)
+
+Write-Log "Starting remediation for $STIG_ID - Disable Camera on Lock Screen"
+
+$currentValue = $null
+try {
+    if (Test-Path $REG_PATH) {
+        $currentValue = (Get-ItemProperty -Path $REG_PATH -Name $REG_NAME -ErrorAction SilentlyContinue).$REG_NAME
+    }
+} catch {
+    Write-Log "Failed to read registry value: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+
+Write-Log "Registry path  : $REG_PATH"
+Write-Log "Registry value : $REG_NAME"
+Write-Log "Current value  : $(if ($null -eq $currentValue) { 'Not set (non-compliant)' } else { $currentValue })"
+Write-Log "Required value : 1 (Camera disabled on lock screen)"
+
+
+# 2. Check compliance 
+
+if ($currentValue -eq 1) {
+    Write-Log "Lock screen camera is already disabled. No changes needed."
+    exit 0
+}
+
+
+# 3. Apply the fix via registry
+
+Write-Log "Applying fix: setting $REG_NAME to 1 ..."
+
+if ($PSCmdlet.ShouldProcess($REG_PATH, "Set $REG_NAME to 1")) {
+    try {
+        # Create the key if it doesn't exist
+        if (-not (Test-Path $REG_PATH)) {
+            New-Item -Path $REG_PATH -Force | Out-Null
+            Write-Log "Registry path did not exist - created: $REG_PATH"
+        }
+
+        Set-ItemProperty -Path $REG_PATH -Name $REG_NAME -Value 1 -Type DWord -Force
+        Write-Log "Registry value set successfully."
+    } catch {
+        Write-Log "Failed to set registry value: $($_.Exception.Message)" "ERROR"
+        exit 1
+    }
+}
+
+
+# 4. Verify the change was applied
+
+Write-Log "Verifying remediation ..."
+
+try {
+    $newValue = (Get-ItemProperty -Path $REG_PATH -Name $REG_NAME -ErrorAction Stop).$REG_NAME
+
+    if ($newValue -eq 1) {
+        Write-Log "VERIFICATION PASSED - $REG_NAME is now set to $newValue (Camera disabled on lock screen)."
+        exit 0
+    } else {
+        Write-Log "VERIFICATION FAILED - $REG_NAME value is '$newValue' (expected 1)." "ERROR"
+        exit 1
+    }
+} catch {
+    Write-Log "Failed to verify registry value: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+
+
