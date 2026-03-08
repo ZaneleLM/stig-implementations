@@ -1,0 +1,118 @@
+DESCRIPTION
+This script automates the configuration of the "The system must be configured to audit Logon/Logoff - Account Lockout failures" policy.
+
+#Requires -RunAsAdministrator
+
+[CmdletBinding(SupportsShouldProcess)]
+param ()
+
+$STIG_ID           = "WN10-AU-000054"
+$LOG_FILE          = "$env:SystemRoot\Logs\STIG-Remediation-$STIG_ID.log"
+$AUDIT_SUBCATEGORY = "Account Lockout"
+
+# Ensure log directory exists
+if (-not (Test-Path "$env:SystemRoot\Logs")) {
+    New-Item -ItemType Directory -Path "$env:SystemRoot\Logs" -Force | Out-Null
+}
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $entry = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
+    Write-Host $entry
+    $entry | Out-File -FilePath $LOG_FILE -Append -Encoding UTF8
+}
+
+
+# Helper: parse auditpol output for a subcategory
+# Returns: "No Auditing", "Success", "Failure", "Success and Failure"
+
+function Get-AuditSetting {
+    param([string]$Subcategory)
+
+    $output = & auditpol /get /subcategory:"$Subcategory" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "auditpol /get failed: $output"
+    }
+
+    $line = $output | Where-Object { $_ -match $Subcategory }
+    if ($line -match "(No Auditing|Success and Failure|Success|Failure)\s*$") {
+        return $Matches[1].Trim()
+    }
+    return "Unknown"
+}
+
+
+1. Read current audit setting
+
+Write-Log "Starting remediation for $STIG_ID - Audit Account Lockout Failures"
+
+$currentSetting = $null
+try {
+    $currentSetting = Get-AuditSetting -Subcategory $AUDIT_SUBCATEGORY
+} catch {
+    Write-Log "Failed to read current audit policy: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+
+Write-Log "Subcategory    : $AUDIT_SUBCATEGORY"
+Write-Log "Current setting: $currentSetting"
+Write-Log "Required       : Failure (or Success and Failure)"
+
+
+2. Check compliance 
+
+if ($currentSetting -eq "Failure" -or $currentSetting -eq "Success and Failure") {
+    Write-Log "Audit policy is already compliant. No changes needed."
+    exit 0
+}
+
+
+ 3. Apply the fix
+
+if ($currentSetting -eq "Success") {
+    $auditFlag = "enable:success,failure"
+    $newLabel  = "Success and Failure"
+} else {
+    $auditFlag = "enable:failure"
+    $newLabel  = "Failure"
+}
+
+Write-Log "Applying fix: setting '$AUDIT_SUBCATEGORY' to '$newLabel' ..."
+
+if ($PSCmdlet.ShouldProcess("Audit Policy - $AUDIT_SUBCATEGORY", "Set to $newLabel")) {
+    try {
+        $result = & auditpol /set /subcategory:"$AUDIT_SUBCATEGORY" /$auditFlag 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "auditpol command succeeded: $result"
+        } else {
+            Write-Log "auditpol command failed (exit code $LASTEXITCODE): $result" "ERROR"
+            exit 1
+        }
+    } catch {
+        Write-Log "Exception applying audit policy: $($_.Exception.Message)" "ERROR"
+        exit 1
+    }
+}
+
+
+4. Verify the change was applied
+
+Write-Log "Verifying remediation ..."
+
+try {
+    $newSetting = Get-AuditSetting -Subcategory $AUDIT_SUBCATEGORY
+
+    if ($newSetting -eq "Failure" -or $newSetting -eq "Success and Failure") {
+        Write-Log "VERIFICATION PASSED - '$AUDIT_SUBCATEGORY' is now set to '$newSetting'."
+        exit 0
+    } else {
+        Write-Log "VERIFICATION FAILED - '$AUDIT_SUBCATEGORY' is '$newSetting' (expected Failure or Success and Failure)." "ERROR"
+        exit 1
+    }
+} catch {
+    Write-Log "Failed to verify audit policy: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
